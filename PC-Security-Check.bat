@@ -5,12 +5,17 @@ color 0A
 mode con: cols=110 lines=45
 cd /d "%~dp0"
 
+set "REPORT=%~dp0PC-Security-Check-report.txt"
+set "SUMMARY=%~dp0PC-Security-Check-SUMMARY.txt"
+
 echo.
 echo  ============================================================
-echo   PC SECURITY CHECK  [v7]
+echo   PC SECURITY CHECK  [v8]
 echo  ============================================================
 echo.
-echo  Bat folder: %~dp0
+echo  Folder: %~dp0
+echo  Report: %REPORT%
+echo  Summary: %SUMMARY%
 echo.
 
 if not exist "%~dp0PC-Security-Check.ps1" (
@@ -19,39 +24,59 @@ if not exist "%~dp0PC-Security-Check.ps1" (
     exit /b 1
 )
 
-findstr /C:"SCRIPT_VERSION=v7" "%~dp0PC-Security-Check.ps1" >nul
+findstr /C:"SCRIPT_VERSION=v8" "%~dp0PC-Security-Check.ps1" >nul
 if errorlevel 1 (
-    echo  ERROR: Your PC-Security-Check.ps1 is OLD! Need v7.
+    echo  ERROR: Need v8 ps1 file! Line 1 must say SCRIPT_VERSION=v8
     pause
     exit /b 1
 )
 
+echo  Testing write access...
+echo test> "%~dp0_PC-Security-Check-write-test.txt" 2>nul
+if not exist "%~dp0_PC-Security-Check-write-test.txt" (
+    echo  ERROR: Cannot write files to this folder!
+    echo  Try moving both files to Desktop and run from there.
+    pause
+    exit /b 1
+)
+del "%~dp0_PC-Security-Check-write-test.txt" 2>nul
+echo  [OK] Folder is writable.
+echo.
+
 set "PCSEC_DIR=%~dp0"
-set "WORK_DIR=%TEMP%\PC-Security-Check"
-if not exist "%WORK_DIR%" mkdir "%WORK_DIR%" 2>nul
-
-del /f /q "%TEMP%\PC-Security-Check-run.ps1" 2>nul
-
 echo  Starting scan... please wait 1-2 minutes.
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0PC-Security-Check.ps1" -ScriptDir "%~dp0"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0PC-Security-Check.ps1" -ScriptDir "%~dp0" -ReportPath "%REPORT%" -SummaryPath "%SUMMARY%"
 set "SCAN_EXIT=%ERRORLEVEL%"
 
 echo.
-echo  Copying report files to bat folder...
-if exist "%WORK_DIR%\*.txt" (
-    copy /Y "%WORK_DIR%\*.txt" "%~dp0\" >nul 2>&1
-    if errorlevel 1 (
-        echo  [WARN] Could not copy to Downloads - files remain in:
-        echo  %WORK_DIR%
-    ) else (
-        echo  [OK] Files copied to:
-        echo  %~dp0
-    )
+echo  ============================================================
+echo   CHECKING OUTPUT FILES...
+echo  ============================================================
+echo.
+
+if exist "%REPORT%" (
+    echo  [OK] Report created:
+    echo       %REPORT%
+    for %%A in ("%REPORT%") do echo       Size: %%~zA bytes
 ) else (
-    echo  [WARN] No report files found in:
-    echo  %WORK_DIR%
+    echo  [MISSING] Report NOT created:
+    echo       %REPORT%
+)
+
+echo.
+
+if exist "%SUMMARY%" (
+    echo  [OK] Summary created:
+    echo       %SUMMARY%
+    echo.
+    echo  --- SUMMARY contents ---
+    type "%SUMMARY%"
+    echo  --- end summary ---
+) else (
+    echo  [MISSING] Summary NOT created:
+    echo       %SUMMARY%
 )
 
 echo.
@@ -62,18 +87,9 @@ if "%SCAN_EXIT%"=="0" (
     echo   Finished with code %SCAN_EXIT%
 )
 echo.
-echo   CHECK THESE LOCATIONS FOR YOUR FILES:
-echo.
-echo   1^) %~dp0
-echo   2^) %WORK_DIR%
-echo.
-echo   Look for:
-echo   - PC-Security-Check-report-*.txt
-echo   - PC-Security-Check-SUMMARY.txt
-echo   - PC-Security-Check-FILES-HERE.txt
-echo.
-echo   File Explorer should have opened automatically.
-echo   Press any key to close this window
+echo   Opening folder: %~dp0
+echo   Press any key to close
 echo  ============================================================
+start "" explorer.exe "%~dp0"
 pause >nul
 exit /b %SCAN_EXIT%

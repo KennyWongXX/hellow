@@ -1,163 +1,106 @@
-# SCRIPT_VERSION=v7
+# SCRIPT_VERSION=v8
 param(
-    [string]$ScriptDir = ''
+    [string]$ScriptDir = '',
+    [string]$ReportPath = '',
+    [string]$SummaryPath = ''
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
 $WarnCount = 0
 $apps = @()
+$LogLines = New-Object System.Collections.Generic.List[string]
+$AttentionItems = New-Object System.Collections.Generic.List[string]
 
-if (-not $ScriptDir -and $env:PCSEC_DIR) {
-    $ScriptDir = $env:PCSEC_DIR
-}
+if (-not $ScriptDir -and $env:PCSEC_DIR) { $ScriptDir = $env:PCSEC_DIR }
 if (-not $ScriptDir -and $MyInvocation.MyCommand.Path) {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 }
-if (-not $ScriptDir) {
-    $ScriptDir = (Get-Location).Path
-}
+if (-not $ScriptDir) { $ScriptDir = (Get-Location).Path }
 
 $ScriptFolder = $ScriptDir.TrimEnd('\')
-$WorkDir = Join-Path $env:TEMP 'PC-Security-Check'
-$ReportFile = Join-Path $WorkDir ("PC-Security-Check-report-{0:yyyyMMdd-HHmmss}.txt" -f (Get-Date))
-$AttentionItems = New-Object System.Collections.Generic.List[string]
+if (-not $ReportPath) { $ReportPath = Join-Path $ScriptFolder 'PC-Security-Check-report.txt' }
+if (-not $SummaryPath) { $SummaryPath = Join-Path $ScriptFolder 'PC-Security-Check-SUMMARY.txt' }
 
-function Test-CanWriteFolder {
-    param([string]$Folder)
-    if (-not $Folder -or -not (Test-Path -LiteralPath $Folder)) { return $false }
-    try {
-        $testFile = Join-Path $Folder ('_pcsec_test_' + [guid]::NewGuid().ToString() + '.tmp')
-        [System.IO.File]::WriteAllText($testFile, 'ok')
-        Remove-Item -LiteralPath $testFile -Force
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Save-LinesToFile {
-    param(
-        [string]$Path,
-        [string[]]$Lines
-    )
-    try {
-        $parent = Split-Path $Path -Parent
-        if (-not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-        }
-        [System.IO.File]::WriteAllLines($Path, $Lines, [System.Text.UTF8Encoding]::new($false))
-        return $true
-    } catch {
-        Write-Host "  [ERROR] Could not save: $Path" -ForegroundColor Red
-        Write-Host "          $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-function Copy-ReportFiles {
-    param([string]$TargetFolder)
-
-    if (-not (Test-Path -LiteralPath $WorkDir)) { return @() }
-
-    $copied = New-Object System.Collections.Generic.List[string]
-    Get-ChildItem -LiteralPath $WorkDir -Filter '*.txt' -ErrorAction SilentlyContinue | ForEach-Object {
-        $dest = Join-Path $TargetFolder $_.Name
-        try {
-            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
-            $copied.Add($dest) | Out-Null
-        } catch {
-            Write-Host "  [ERROR] Could not copy to: $dest" -ForegroundColor Red
-            Write-Host "          $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-    return ,$copied.ToArray()
+function Log-Line {
+    param([string]$Msg)
+    Write-Host $Msg
+    $script:LogLines.Add($Msg) | Out-Null
 }
 
 function Write-Section {
     param([string]$Title)
-    Write-Host ""
-    Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host "   $Title" -ForegroundColor Cyan
-    Write-Host "  ============================================================" -ForegroundColor Cyan
-    Write-Host ""
+    Log-Line ""
+    Log-Line "  ============================================================"
+    Log-Line "   $Title"
+    Log-Line "  ============================================================"
+    Log-Line ""
 }
 
 function Add-Attention {
-    param(
-        [string]$Category,
-        [string]$Detail
-    )
+    param([string]$Category, [string]$Detail)
     if ([string]::IsNullOrWhiteSpace($Detail)) { return }
-    $entry = "[$Category] $Detail"
-    $script:AttentionItems.Add($entry) | Out-Null
+    $script:AttentionItems.Add("[$Category] $Detail") | Out-Null
 }
 
-function Write-Ok   { param([string]$Msg) Write-Host "  [OK]   $Msg" -ForegroundColor Green }
+function Write-Ok {
+    param([string]$Msg)
+    Log-Line "  [OK]   $Msg"
+}
 
 function Write-Warn {
-    param(
-        [string]$Msg,
-        [string]$Category = 'Warning'
-    )
-    Write-Host "  [!!]   $Msg" -ForegroundColor Red
+    param([string]$Msg, [string]$Category = 'Warning')
+    Log-Line "  [!!]   $Msg"
     Add-Attention -Category $Category -Detail $Msg
     $script:WarnCount++
 }
 
 function Write-Info {
-    param(
-        [string]$Msg,
-        [string]$Category = '',
-        [switch]$Attention
-    )
-    Write-Host "  [INFO] $Msg" -ForegroundColor Yellow
-    if ($Attention -and $Category) {
-        Add-Attention -Category $Category -Detail $Msg
-    }
+    param([string]$Msg, [string]$Category = '', [switch]$Attention)
+    Log-Line "  [INFO] $Msg"
+    if ($Attention -and $Category) { Add-Attention -Category $Category -Detail $Msg }
 }
 
 function Invoke-Check {
-    param(
-        [string]$Name,
-        [scriptblock]$Action
-    )
+    param([string]$Name, [scriptblock]$Action)
     Write-Section $Name
+    try { & $Action } catch { Write-Warn "Check failed: $($_.Exception.Message)" -Category $Name }
+}
+
+function Save-TextFile {
+    param([string]$Path, [string[]]$Lines)
     try {
-        & $Action
+        $dir = Split-Path $Path -Parent
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllLines($Path, $Lines, [System.Text.UTF8Encoding]::new($false))
+        Log-Line "  [SAVED] $Path"
+        return $true
     } catch {
-        Write-Warn "Check failed: $($_.Exception.Message)" -Category $Name
+        Log-Line "  [ERROR] Failed to save: $Path"
+        Log-Line "          $($_.Exception.Message)"
+        return $false
     }
 }
 
 function Show-AttentionSummary {
-    Write-Host ""
-    Write-Host "  ############################################################" -ForegroundColor Red
-    Write-Host "   SUMMARY - ITEMS YOU NEED TO PAY ATTENTION TO" -ForegroundColor Red
-    Write-Host "  ############################################################" -ForegroundColor Red
-    Write-Host ""
-
+    Log-Line ""
+    Log-Line "  ############################################################"
+    Log-Line "   SUMMARY - ITEMS YOU NEED TO PAY ATTENTION TO"
+    Log-Line "  ############################################################"
+    Log-Line ""
     if ($AttentionItems.Count -eq 0) {
-        Write-Host "  [OK] No major red flags detected." -ForegroundColor Green
-        Write-Host "  Nothing urgent found. Still check your router for unknown devices." -ForegroundColor Green
+        Log-Line "  [OK] No major red flags detected."
     } else {
-        Write-Host "  Found $($AttentionItems.Count) item(s) that need your attention:" -ForegroundColor Red
-        Write-Host ""
+        Log-Line "  Found $($AttentionItems.Count) item(s) that need your attention:"
+        Log-Line ""
         $num = 1
         foreach ($item in $AttentionItems) {
-            Write-Host "    $num. $item" -ForegroundColor Yellow
+            Log-Line "    $num. $item"
             $num++
         }
-        Write-Host ""
-        Write-Host "  What to do if you did NOT install/expect these:" -ForegroundColor Red
-        Write-Host "    1. Disconnect internet"
-        Write-Host "    2. Run Windows Defender full scan"
-        Write-Host "    3. Download Malwarebytes: https://www.malwarebytes.com"
-        Write-Host "    4. Change passwords from another device"
-        Write-Host "    5. For pinhole cameras: check router for unknown Wi-Fi devices"
     }
-
-    Write-Host ""
-    Write-Host "  Note: This scan does NOT guarantee 100% safety." -ForegroundColor Cyan
+    Log-Line ""
 }
 
 function Get-InstalledAppsSafe {
@@ -166,159 +109,92 @@ function Get-InstalledAppsSafe {
         @{ Hive = [Microsoft.Win32.Registry]::LocalMachine; Path = 'Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' },
         @{ Hive = [Microsoft.Win32.Registry]::CurrentUser;  Path = 'Software\Microsoft\Windows\CurrentVersion\Uninstall' }
     )
-
     $results = New-Object System.Collections.Generic.List[Object]
-
     foreach ($root in $roots) {
         $parentKey = $null
         try {
             $parentKey = $root.Hive.OpenSubKey($root.Path)
             if (-not $parentKey) { continue }
-
             foreach ($subName in $parentKey.GetSubKeyNames()) {
                 $subKey = $null
                 try {
                     $subKey = $parentKey.OpenSubKey($subName)
                     if (-not $subKey) { continue }
-
                     $displayName = $subKey.GetValue('DisplayName')
                     if (-not $displayName) { continue }
-
                     $results.Add([PSCustomObject]@{
                         DisplayName = [string]$displayName
                         Publisher   = [string]($subKey.GetValue('Publisher'))
                         InstallDate = [string]($subKey.GetValue('InstallDate'))
                     }) | Out-Null
-                } catch {
-                    continue
-                } finally {
-                    if ($subKey) { $subKey.Close() }
-                }
+                } catch { continue } finally { if ($subKey) { $subKey.Close() } }
             }
-        } catch {
-            continue
-        } finally {
-            if ($parentKey) { $parentKey.Close() }
-        }
+        } catch { continue } finally { if ($parentKey) { $parentKey.Close() } }
     }
-
     return ,$results.ToArray()
 }
 
-try {
-    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
-    Start-Transcript -Path $ReportFile -Force | Out-Null
-} catch {
-    Write-Host "  [WARN] Could not start transcript: $($_.Exception.Message)" -ForegroundColor Yellow
-}
-
-Write-Host ""
-Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host "   PC SECURITY CHECK  [v7]" -ForegroundColor Green
-Write-Host "   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
-Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host ""
-Write-Host "  Bat folder    : $ScriptFolder"
-Write-Host "  Working folder: $WorkDir"
-Write-Host "  Report file   : $ReportFile"
-Write-Host ""
+Log-Line ""
+Log-Line "  ============================================================"
+Log-Line "   PC SECURITY CHECK  [v8]"
+Log-Line "   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Log-Line "  ============================================================"
+Log-Line ""
+Log-Line "  Report will save to: $ReportPath"
+Log-Line "  Summary will save to: $SummaryPath"
+Log-Line ""
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($isAdmin) {
-    Write-Ok "Running as Administrator"
-} else {
-    Write-Warn "Not running as Administrator - some checks may be limited" -Category 'Admin'
-    Write-Host "       Tip: Right-click bat file -> Run as administrator"
-}
+if ($isAdmin) { Write-Ok "Running as Administrator" }
+else { Write-Warn "Not running as Administrator - some checks may be limited" -Category 'Admin' }
 
 Invoke-Check "1. REMOTE ACCESS SOFTWARE - Installed" {
-    $remoteKeywords = @(
-        'TeamViewer','AnyDesk','RustDesk','Splashtop','LogMeIn','VNC','TightVNC',
-        'UltraVNC','RealVNC','Chrome Remote','Quick Assist','RemotePC','ConnectWise',
-        'ScreenConnect','Ammyy','Supremo','DWAgent','MeshCentral','Radmin',
-        'GoToAssist','UltraViewer','AeroAdmin','Parsec'
-    )
-
+    $remoteKeywords = @('TeamViewer','AnyDesk','RustDesk','Splashtop','LogMeIn','VNC','TightVNC','UltraVNC','RealVNC','Chrome Remote','Quick Assist','RemotePC','ConnectWise','ScreenConnect','Ammyy','Supremo','DWAgent','MeshCentral','Radmin','GoToAssist','UltraViewer','AeroAdmin','Parsec')
     $script:apps = @(Get-InstalledAppsSafe)
-
     $foundApps = New-Object System.Collections.Generic.List[Object]
     foreach ($app in $script:apps) {
         foreach ($kw in $remoteKeywords) {
-            if ($app.DisplayName -match $kw) {
-                $foundApps.Add($app) | Out-Null
-                break
-            }
+            if ($app.DisplayName -match $kw) { $foundApps.Add($app) | Out-Null; break }
         }
     }
-
     $unique = @($foundApps | Sort-Object DisplayName -Unique)
     if ($unique.Count -gt 0) {
-        Write-Host "  [!!]   Remote access software found:" -ForegroundColor Red
+        Log-Line "  [!!]   Remote access software found:"
         foreach ($app in $unique) {
             $detail = $app.DisplayName
             if ($app.Publisher) { $detail += " | Publisher: $($app.Publisher)" }
             Add-Attention -Category 'Remote Software' -Detail $detail
-            Write-Host "         - $detail" -ForegroundColor Red
+            Log-Line "         - $detail"
         }
         $script:WarnCount++
-    } else {
-        Write-Ok "No common remote-access programs found in registry"
-    }
+    } else { Write-Ok "No common remote-access programs found in registry" }
 
-    $folders = @(
-        "$env:ProgramFiles\TeamViewer",
-        "${env:ProgramFiles(x86)}\TeamViewer",
-        "$env:ProgramFiles\AnyDesk",
-        "${env:ProgramFiles(x86)}\AnyDesk",
-        "$env:ProgramFiles\RustDesk",
-        "$env:LOCALAPPDATA\RustDesk",
-        "$env:ProgramFiles\RealVNC",
-        "${env:ProgramFiles(x86)}\RealVNC"
-    )
-
-    Write-Host "  Checking install folders..."
-    foreach ($folder in $folders) {
-        if (Test-Path -LiteralPath $folder) {
-            Write-Warn "Install folder exists: $folder" -Category 'Remote Software'
-        }
+    foreach ($folder in @("$env:ProgramFiles\TeamViewer","${env:ProgramFiles(x86)}\TeamViewer","$env:ProgramFiles\AnyDesk","${env:ProgramFiles(x86)}\AnyDesk","$env:ProgramFiles\RustDesk","$env:LOCALAPPDATA\RustDesk")) {
+        if (Test-Path -LiteralPath $folder) { Write-Warn "Install folder exists: $folder" -Category 'Remote Software' }
     }
 }
 
 Invoke-Check "2. RUNNING PROCESSES - Remote / Suspicious" {
-    $procNames = @(
-        'TeamViewer','AnyDesk','rustdesk','vncviewer','vncserver','winvnc','tvnserver',
-        'chrome_remote_desktop_host','msra','QuickAssist','splashtop','LogMeIn',
-        'ammyy','dwagent','MeshAgent','ScreenConnect','nc','ncat','netcat'
-    )
-
     $procFound = $false
-    foreach ($name in $procNames) {
+    foreach ($name in @('TeamViewer','AnyDesk','rustdesk','vncviewer','vncserver','winvnc','tvnserver','chrome_remote_desktop_host','msra','QuickAssist','splashtop','LogMeIn','ammyy','dwagent','MeshAgent','ScreenConnect','nc','ncat','netcat')) {
         $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
         if ($procs) {
             $procFound = $true
-            foreach ($p in $procs) {
-                Write-Warn "Process RUNNING: $($p.ProcessName) (PID $($p.Id))" -Category 'Running Process'
-            }
+            foreach ($p in $procs) { Write-Warn "Process RUNNING: $($p.ProcessName) (PID $($p.Id))" -Category 'Running Process' }
         }
     }
     if (-not $procFound) { Write-Ok "No known remote-access processes running" }
 }
 
 Invoke-Check "3. NETWORK - Listening Ports" {
-    Write-Host "  Risky ports: 22=SSH, 3389=RDP, 5900=VNC, 5938=TeamViewer, 7070=AnyDesk"
-    Write-Host ""
-    Write-Host "  All LISTENING ports:"
-    netstat -ano | Select-String "LISTENING" | ForEach-Object { Write-Host "  $_" }
-
-    $riskyPorts = @(22, 3389, 5900, 5938, 6568, 7070, 21116)
+    Log-Line "  Risky ports: 22=SSH, 3389=RDP, 5900=VNC, 5938=TeamViewer, 7070=AnyDesk"
+    Log-Line ""
+    foreach ($line in (netstat -ano | Select-String "LISTENING")) { Log-Line "  $line" }
     $portFound = $false
-    foreach ($port in $riskyPorts) {
-        $portHits = @(netstat -ano | Select-String ":$port\s" | Select-String "LISTENING")
-        if ($portHits.Count -gt 0) {
+    foreach ($port in @(22, 3389, 5900, 5938, 6568, 7070, 21116)) {
+        foreach ($hit in @(netstat -ano | Select-String ":$port\s" | Select-String "LISTENING")) {
             $portFound = $true
-            foreach ($hit in $portHits) {
-                Write-Warn "Risky port $port is LISTENING - $hit" -Category 'Network Port'
-            }
+            Write-Warn "Risky port $port is LISTENING - $hit" -Category 'Network Port'
         }
     }
     if (-not $portFound) { Write-Ok "No common remote-access ports listening" }
@@ -326,70 +202,42 @@ Invoke-Check "3. NETWORK - Listening Ports" {
 
 Invoke-Check "4. ACTIVE CONNECTIONS" {
     $conns = @(netstat -ano | Select-String "ESTABLISHED")
-    if ($conns.Count -gt 0) {
-        $conns | ForEach-Object { Write-Host "  $_" }
-    } else {
-        Write-Info "No established connections right now"
-    }
+    if ($conns.Count -gt 0) { foreach ($c in $conns) { Log-Line "  $c" } }
+    else { Write-Info "No established connections right now" }
 }
 
 Invoke-Check "5. STARTUP PROGRAMS" {
-    Write-Host "  --- Startup folder (User) ---"
+    Log-Line "  --- Startup folder (User) ---"
     $userStartup = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-    if (Test-Path -LiteralPath $userStartup) {
-        Get-ChildItem -LiteralPath $userStartup | ForEach-Object { Write-Host "  $($_.Name)" }
-    } else {
-        Write-Host "  [empty]"
-    }
-
-    Write-Host ""
-    Write-Host "  --- Startup folder (All Users) ---"
-    $allStartup = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
-    if (Test-Path -LiteralPath $allStartup) {
-        Get-ChildItem -LiteralPath $allStartup | ForEach-Object { Write-Host "  $($_.Name)" }
-    } else {
-        Write-Host "  [empty]"
-    }
-
-    Write-Host ""
-    Write-Host "  --- Registry Run HKCU ---"
-    cmd /c 'reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul'
-
-    Write-Host ""
-    Write-Host "  --- Registry Run HKLM ---"
-    cmd /c 'reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul'
+    if (Test-Path -LiteralPath $userStartup) { Get-ChildItem -LiteralPath $userStartup | ForEach-Object { Log-Line "  $($_.Name)" } }
+    else { Log-Line "  [empty]" }
+    Log-Line ""
+    Log-Line "  --- Registry Run HKCU ---"
+    foreach ($line in (cmd /c 'reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul')) { Log-Line "  $line" }
+    Log-Line ""
+    Log-Line "  --- Registry Run HKLM ---"
+    foreach ($line in (cmd /c 'reg query "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" 2>nul')) { Log-Line "  $line" }
 }
 
 Invoke-Check "6. SCHEDULED TASKS" {
-    $taskOutput = @(schtasks /Query /FO LIST 2>$null)
-    $taskHits = @($taskOutput | Select-String -Pattern "TeamViewer|AnyDesk|RustDesk|VNC|Remote|Splashtop|LogMeIn")
-    if ($taskHits.Count -gt 0) {
-        foreach ($hit in $taskHits) {
-            $line = $hit.Line.Trim()
-            Write-Info $line -Category 'Scheduled Task' -Attention
-        }
-    } else {
-        Write-Ok "No obvious remote-access tasks found"
-    }
+    $taskHits = @(schtasks /Query /FO LIST 2>$null | Select-String -Pattern "TeamViewer|AnyDesk|RustDesk|VNC|Remote|Splashtop|LogMeIn")
+    if ($taskHits.Count -gt 0) { foreach ($hit in $taskHits) { Write-Info $hit.Line.Trim() -Category 'Scheduled Task' -Attention } }
+    else { Write-Ok "No obvious remote-access tasks found" }
 }
 
 Invoke-Check "7. CAMERAS ON THIS PC" {
     $cams = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue)
     if ($cams.Count -eq 0) {
-        $cams = @(Get-PnpDevice -ErrorAction SilentlyContinue |
-            Where-Object { $_.FriendlyName -match 'camera|webcam|video|uvc|integrated|imaging' })
+        $cams = @(Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -match 'camera|webcam|video|uvc|integrated|imaging' })
     }
-
     if ($cams.Count -gt 0) {
-        Write-Host "  [INFO] Camera devices found on this PC:" -ForegroundColor Yellow
+        Log-Line "  [INFO] Camera devices found:"
         foreach ($cam in $cams) {
             $detail = "$($cam.FriendlyName) | Status: $($cam.Status)"
             Add-Attention -Category 'Camera' -Detail $detail
-            Write-Host "         - $detail" -ForegroundColor Yellow
+            Log-Line "         - $detail"
         }
-    } else {
-        Write-Ok "No camera devices detected on this PC"
-    }
+    } else { Write-Ok "No camera devices detected on this PC" }
 }
 
 Invoke-Check "8. CAMERA PERMISSIONS" {
@@ -398,131 +246,88 @@ Invoke-Check "8. CAMERA PERMISSIONS" {
     if (Test-Path -LiteralPath $camBase) {
         Get-ChildItem -LiteralPath $camBase -ErrorAction SilentlyContinue | ForEach-Object {
             try {
-                $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
-                    'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\' + $_.PSChildName)
+                $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\' + $_.PSChildName)
                 if ($key) {
                     $val = [string]$key.GetValue('Value')
                     $key.Close()
                     if ($val -eq 'Allow') {
-                        $detail = "App allowed to use camera: $($_.PSChildName)"
-                        Add-Attention -Category 'Camera Permission' -Detail $detail
-                        Write-Host "  [INFO] $detail" -ForegroundColor Yellow
+                        Add-Attention -Category 'Camera Permission' -Detail "App allowed: $($_.PSChildName)"
+                        Log-Line "  [INFO] App allowed to use camera: $($_.PSChildName)"
                         $allowCount++
                     }
                 }
-            } catch {
-                continue
-            }
+            } catch { continue }
         }
     }
-    if ($allowCount -eq 0) {
-        Write-Info "No apps with explicit camera Allow found"
-    }
+    if ($allowCount -eq 0) { Write-Info "No apps with explicit camera Allow found" }
 }
 
 Invoke-Check "9. CAMERA APPS RUNNING NOW" {
-    $keywords = @('camera','webcam','zoom','teams','skype','obs','meet','discord','line','wechat')
-    $camAppFound = $false
+    $script:camAppFound = $false
     Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-        foreach ($kw in $keywords) {
+        foreach ($kw in @('camera','webcam','zoom','teams','skype','obs','meet','discord','line','wechat')) {
             if ($_.ProcessName -match $kw -or $_.MainWindowTitle -match $kw) {
                 $detail = "$($_.ProcessName) | $($_.MainWindowTitle)"
                 Add-Attention -Category 'Camera In Use' -Detail $detail
-                Write-Host "  [INFO] Camera app running now: $detail" -ForegroundColor Yellow
-                $camAppFound = $true
+                Log-Line "  [INFO] Camera app running now: $detail"
+                $script:camAppFound = $true
                 break
             }
         }
     }
-    if (-not $camAppFound) { Write-Ok "No obvious camera apps running" }
-    Write-Host ""
-    Write-Host "  Tip: If camera light is ON but nothing listed, run a malware scan." -ForegroundColor Cyan
+    if (-not $script:camAppFound) { Write-Ok "No obvious camera apps running" }
 }
 
 Invoke-Check "10. NETWORK INFO - Pinhole Camera Check" {
-    Write-Host "  Your IP addresses:"
-    ipconfig | Select-String "IPv4" | ForEach-Object { Write-Host "  $_" }
-
-    Write-Host ""
-    Write-Host "  Router address - open in browser to see ALL connected devices:"
-    $gateway = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-        Sort-Object RouteMetric | Select-Object -First 1).NextHop
+    foreach ($line in (ipconfig | Select-String "IPv4")) { Log-Line "  $line" }
+    $gateway = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1).NextHop
     if ($gateway) {
-        Write-Host "  http://$gateway" -ForegroundColor Yellow
-        Add-Attention -Category 'Pinhole Camera Check' -Detail "Check router at http://$gateway for unknown Wi-Fi devices (IPCAM, CamHi, V380)"
+        Log-Line "  Router: http://$gateway"
+        Add-Attention -Category 'Pinhole Camera Check' -Detail "Check router at http://$gateway for unknown Wi-Fi devices"
     }
-
-    Write-Host ""
-    Write-Host "  Local network devices (ARP):"
-    cmd /c arp -a
-
-    Write-Host ""
-    Write-Host "  [TIP] Hidden pinhole cameras connect to Wi-Fi, NOT your PC." -ForegroundColor Cyan
-    Write-Host "        Check router for unknown devices: IPCAM, CamHi, V380, Hikvision" -ForegroundColor Cyan
+    Log-Line ""
+    foreach ($line in (cmd /c arp -a)) { Log-Line "  $line" }
 }
 
 Invoke-Check "11. WINDOWS DEFENDER" {
-    $s = Get-MpComputerStatus -ErrorAction Stop
-    Write-Host "  Antivirus enabled    : $($s.AntivirusEnabled)"
-    Write-Host "  Real-time protection : $($s.RealTimeProtectionEnabled)"
-    Write-Host "  Last quick scan      : $($s.QuickScanStartTime)"
-    Write-Host "  Last full scan       : $($s.FullScanStartTime)"
-    if ($s.RealTimeProtectionEnabled) {
-        Write-Ok "Real-time protection is ON"
-    } else {
-        Write-Warn "Real-time protection is OFF" -Category 'Windows Defender'
-    }
-    if (-not $s.AntivirusEnabled) {
-        Write-Warn "Antivirus is disabled" -Category 'Windows Defender'
-    }
+    try {
+        $s = Get-MpComputerStatus -ErrorAction Stop
+        Log-Line "  Antivirus enabled    : $($s.AntivirusEnabled)"
+        Log-Line "  Real-time protection : $($s.RealTimeProtectionEnabled)"
+        if ($s.RealTimeProtectionEnabled) { Write-Ok "Real-time protection is ON" }
+        else { Write-Warn "Real-time protection is OFF" -Category 'Windows Defender' }
+    } catch { Write-Info "Could not read Defender status" }
 }
 
 Invoke-Check "12. RECENTLY INSTALLED PROGRAMS - Last 30 days" {
     $cutoff = (Get-Date).AddDays(-30)
     $recentList = New-Object System.Collections.Generic.List[Object]
-
     foreach ($app in $apps) {
         $dateText = [string]$app.InstallDate
         if ($dateText -match '^(\d{4})(\d{2})(\d{2})$') {
-            $year = [int]$Matches[1]
-            $month = [int]$Matches[2]
-            $day = [int]$Matches[3]
-            $d = Get-Date -Year $year -Month $month -Day $day
+            $d = Get-Date -Year ([int]$Matches[1]) -Month ([int]$Matches[2]) -Day ([int]$Matches[3])
             if ($d -gt $cutoff) {
-                $recentList.Add([PSCustomObject]@{
-                    Name      = $app.DisplayName
-                    Installed = $d.ToString('yyyy-MM-dd')
-                    Publisher = $app.Publisher
-                }) | Out-Null
+                $recentList.Add([PSCustomObject]@{ Name = $app.DisplayName; Installed = $d.ToString('yyyy-MM-dd') }) | Out-Null
             }
         }
     }
-
     $recent = @($recentList | Sort-Object Installed -Descending)
     if ($recent.Count -gt 0) {
-        Write-Host "  [INFO] Recently installed programs:" -ForegroundColor Yellow
+        Log-Line "  [INFO] Recently installed programs:"
         foreach ($item in ($recent | Select-Object -First 15)) {
             $detail = "$($item.Name) | Installed: $($item.Installed)"
             Add-Attention -Category 'Recent Install' -Detail $detail
-            Write-Host "         - $detail" -ForegroundColor Yellow
+            Log-Line "         - $detail"
         }
-    } else {
-        Write-Info "No install dates found in last 30 days"
-    }
+    } else { Write-Info "No install dates found in last 30 days" }
 }
 
 Show-AttentionSummary
 
-try { Stop-Transcript | Out-Null } catch { }
-
-$summaryFile = Join-Path $WorkDir 'PC-Security-Check-SUMMARY.txt'
 $summaryLines = New-Object System.Collections.Generic.List[string]
 $summaryLines.Add("PC Security Check Summary - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
-$summaryLines.Add("Bat folder: $ScriptFolder") | Out-Null
-$summaryLines.Add("Working folder: $WorkDir") | Out-Null
-$summaryLines.Add("Full report: $ReportFile") | Out-Null
+$summaryLines.Add("Folder: $ScriptFolder") | Out-Null
 $summaryLines.Add("") | Out-Null
-
 if ($AttentionItems.Count -eq 0) {
     $summaryLines.Add("No items need immediate attention.") | Out-Null
 } else {
@@ -533,80 +338,22 @@ if ($AttentionItems.Count -eq 0) {
         $num++
     }
 }
+$summaryLines.Add("") | Out-Null
+$summaryLines.Add("Full report: $ReportPath") | Out-Null
 
-Save-LinesToFile -Path $summaryFile -Lines $summaryLines.ToArray() | Out-Null
+$reportOk = Save-TextFile -Path $ReportPath -Lines $LogLines.ToArray()
+$summaryOk = Save-TextFile -Path $SummaryPath -Lines $summaryLines.ToArray()
 
-$pathInfoFile = Join-Path $WorkDir 'PC-Security-Check-FILES-HERE.txt'
-$finalBatFolder = $ScriptFolder
-$copyResults = @()
-
-if (Test-CanWriteFolder $ScriptFolder) {
-    $copyResults = Copy-ReportFiles -TargetFolder $ScriptFolder
-    if ($copyResults.Count -gt 0) {
-        $finalBatFolder = $ScriptFolder
-    }
+Log-Line ""
+Log-Line "  ############################################################"
+if ($reportOk -and $summaryOk) {
+    Log-Line "   SUCCESS - Files saved:"
 } else {
-    Write-Host "  [WARN] Cannot write directly to bat folder (Windows may be blocking it)." -ForegroundColor Yellow
-    Write-Host "         Trying Desktop folder..." -ForegroundColor Yellow
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    if (Test-CanWriteFolder $desktop) {
-        $copyResults = Copy-ReportFiles -TargetFolder $desktop
-        if ($copyResults.Count -gt 0) {
-            $finalBatFolder = $desktop
-        }
-    }
+    Log-Line "   WARNING - Some files could not be saved:"
 }
+Log-Line "   $ReportPath"
+Log-Line "   $SummaryPath"
+Log-Line "  ############################################################"
 
-if ($copyResults.Count -eq 0) {
-    $finalBatFolder = $WorkDir
-}
-
-$pathInfo = @(
-    "PC Security Check - file locations"
-    "Scan time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    ""
-    "Bat folder (where you ran the script):"
-    $ScriptFolder
-    ""
-    "Files created in working folder:"
-    $WorkDir
-    ""
-    "Files copied to (open this folder):"
-    $finalBatFolder
-    ""
-    "Full report:"
-    (Join-Path $finalBatFolder (Split-Path $ReportFile -Leaf))
-    ""
-    "Summary list:"
-    (Join-Path $finalBatFolder 'PC-Security-Check-SUMMARY.txt')
-)
-Save-LinesToFile -Path $pathInfoFile -Lines $pathInfo | Out-Null
-if ($finalBatFolder -ne $WorkDir) {
-    Save-LinesToFile -Path (Join-Path $finalBatFolder 'PC-Security-Check-FILES-HERE.txt') -Lines $pathInfo | Out-Null
-}
-
-Write-Host ""
-Write-Host "  ############################################################" -ForegroundColor Green
-Write-Host "   FILES SAVED HERE - OPEN THIS FOLDER:" -ForegroundColor Green
-Write-Host "  ############################################################" -ForegroundColor Green
-Write-Host ""
-Write-Host "  $finalBatFolder" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "  Files:" -ForegroundColor Green
-Write-Host "  - PC-Security-Check-report-*.txt" -ForegroundColor Yellow
-Write-Host "  - PC-Security-Check-SUMMARY.txt" -ForegroundColor Yellow
-Write-Host "  - PC-Security-Check-FILES-HERE.txt" -ForegroundColor Yellow
-Write-Host ""
-if ($copyResults.Count -eq 0) {
-    Write-Host "  [WARN] Could not copy to Downloads. Files are in TEMP:" -ForegroundColor Red
-    Write-Host "  $WorkDir" -ForegroundColor Red
-}
-Write-Host ""
-Write-Host "  Opening folder in File Explorer now..." -ForegroundColor Cyan
-Write-Host "  ############################################################" -ForegroundColor Green
-
-try { Start-Process explorer.exe -ArgumentList $finalBatFolder } catch { }
-
-# Tell bat where files ended up
-$manifestFile = Join-Path $WorkDir 'PC-Security-Check-MANIFEST.txt'
-Save-LinesToFile -Path $manifestFile -Lines @($finalBatFolder) | Out-Null
+if (-not $reportOk -or -not $summaryOk) { exit 2 }
+exit 0
