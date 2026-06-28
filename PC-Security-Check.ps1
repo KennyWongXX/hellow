@@ -1,4 +1,4 @@
-# SCRIPT_VERSION=v5
+# SCRIPT_VERSION=v6
 param(
     [string]$ScriptDir = ''
 )
@@ -157,7 +157,7 @@ try { Start-Transcript -Path $ReportFile -Force | Out-Null } catch { }
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host "   PC SECURITY CHECK  [v5]" -ForegroundColor Green
+Write-Host "   PC SECURITY CHECK  [v6]" -ForegroundColor Green
 Write-Host "   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
 Write-Host "  ============================================================" -ForegroundColor Green
 Write-Host ""
@@ -478,11 +478,38 @@ try {
     [System.IO.File]::WriteAllLines($summaryFile, $summaryLines.ToArray())
 } catch { }
 
+$pathInfoFile = Join-Path $ScriptFolder "PC-Security-Check-FILES-HERE.txt"
+$pathInfo = @(
+    "PC Security Check - file locations"
+    "Scan time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    ""
+    "Folder:"
+    $ScriptFolder
+    ""
+    "Full report:"
+    $ReportFile
+    ""
+    "Summary list:"
+    $summaryFile
+)
+try {
+    [System.IO.File]::WriteAllLines($pathInfoFile, $pathInfo)
+} catch { }
+
 Write-Host ""
-Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host "   Scan finished." -ForegroundColor Green
-Write-Host "   Full report : $ReportFile" -ForegroundColor Green
-Write-Host "   Summary file: $summaryFile" -ForegroundColor Green
-Write-Host "  ============================================================" -ForegroundColor Green
+Write-Host "  ############################################################" -ForegroundColor Green
+Write-Host "   FILES SAVED HERE:" -ForegroundColor Green
+Write-Host "  ############################################################" -ForegroundColor Green
+Write-Host ""
+Write-Host "  $ScriptFolder" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  1) $ReportFile" -ForegroundColor Yellow
+Write-Host "  2) $summaryFile" -ForegroundColor Yellow
+Write-Host "  3) $pathInfoFile" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  Opening this folder in File Explorer now..." -ForegroundColor Cyan
+Write-Host "  ############################################################" -ForegroundColor Green
+
+try { Start-Process explorer.exe -ArgumentList $ScriptFolder } catch { }
 
 Show-AttentionSummary
