@@ -56,6 +56,47 @@ function Get-NormalizedInstallEntry {
     }
 }
 
+function Get-InstalledAppsSafe {
+    $roots = @(
+        @{ Hive = [Microsoft.Win32.Registry]::LocalMachine; Path = 'Software\Microsoft\Windows\CurrentVersion\Uninstall' },
+        @{ Hive = [Microsoft.Win32.Registry]::LocalMachine; Path = 'Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' },
+        @{ Hive = [Microsoft.Win32.Registry]::CurrentUser;  Path = 'Software\Microsoft\Windows\CurrentVersion\Uninstall' }
+    )
+
+    foreach ($root in $roots) {
+        $parentKey = $null
+        try {
+            $parentKey = $root.Hive.OpenSubKey($root.Path)
+            if (-not $parentKey) { continue }
+
+            foreach ($subName in $parentKey.GetSubKeyNames()) {
+                $subKey = $null
+                try {
+                    $subKey = $parentKey.OpenSubKey($subName)
+                    if (-not $subKey) { continue }
+
+                    $displayName = $subKey.GetValue('DisplayName')
+                    if (-not $displayName) { continue }
+
+                    [PSCustomObject]@{
+                        DisplayName = [string]$displayName
+                        Publisher   = [string]($subKey.GetValue('Publisher'))
+                        InstallDate = [string]($subKey.GetValue('InstallDate'))
+                    }
+                } catch {
+                    continue
+                } finally {
+                    if ($subKey) { $subKey.Close() }
+                }
+            }
+        } catch {
+            continue
+        } finally {
+            if ($parentKey) { $parentKey.Close() }
+        }
+    }
+}
+
 Start-Transcript -Path $ReportFile -Force | Out-Null
 
 Write-Host ""
@@ -87,31 +128,31 @@ $remoteKeywords = @(
 )
 
 $regPaths = @(
-    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
 )
 
-$apps = foreach ($path in $regPaths) {
-    Get-ItemProperty $path -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName } |
-        ForEach-Object { Get-NormalizedInstallEntry $_ }
-}
-
-$foundApps = foreach ($app in $apps) {
-    foreach ($kw in $remoteKeywords) {
-        if ($app.DisplayName -match $kw) {
-            $app
-            break
+try {
+    $apps = @(Get-InstalledAppsSafe)
+    $foundApps = foreach ($app in $apps) {
+        foreach ($kw in $remoteKeywords) {
+            if ($app.DisplayName -match $kw) {
+                $app
+                break
+            }
         }
-    }
-} | Sort-Object DisplayName -Unique
+    } | Sort-Object DisplayName -Unique
 
-if ($foundApps) {
-    Write-Warn "Remote access software found:"
-    $foundApps | Format-Table -AutoSize | Out-String | Write-Host
-} else {
-    Write-Ok "No common remote-access programs found in registry"
+    if ($foundApps) {
+        Write-Warn "Remote access software found:"
+        $foundApps | Format-Table -AutoSize | Out-String | Write-Host
+    } else {
+        Write-Ok "No common remote-access programs found in registry"
+    }
+} catch {
+    Write-Warn "Could not read installed programs: $($_.Exception.Message)"
+    $apps = @()
 }
 
 $folders = @(
@@ -225,17 +266,21 @@ if ($taskHits) {
 # 7. Cameras
 Write-Section "7. CAMERAS ON THIS PC"
 
-$cams = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue)
-if ($cams.Count -eq 0) {
-    $cams = @(Get-PnpDevice -ErrorAction SilentlyContinue |
-        Where-Object { $_.FriendlyName -match 'camera|webcam|video|uvc|integrated|imaging' })
-}
+try {
+    $cams = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue)
+    if ($cams.Count -eq 0) {
+        $cams = @(Get-PnpDevice -ErrorAction SilentlyContinue |
+            Where-Object { $_.FriendlyName -match 'camera|webcam|video|uvc|integrated|imaging' })
+    }
 
-if ($cams.Count -gt 0) {
-    Write-Info "Camera devices found:"
-    $cams | Select-Object Status, Class, FriendlyName | Format-Table -AutoSize | Out-String | Write-Host
-} else {
-    Write-Ok "No camera devices detected on this PC"
+    if ($cams.Count -gt 0) {
+        Write-Info "Camera devices found:"
+        $cams | Select-Object Status, Class, FriendlyName | Format-Table -AutoSize | Out-String | Write-Host
+    } else {
+        Write-Ok "No camera devices detected on this PC"
+    }
+} catch {
+    Write-Warn "Could not list camera devices: $($_.Exception.Message)"
 }
 
 # 8. Camera permissions
@@ -245,10 +290,14 @@ $camBase = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessMana
 $allowCount = 0
 if (Test-Path $camBase) {
     Get-ChildItem $camBase -ErrorAction SilentlyContinue | ForEach-Object {
-        $v = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-        if ($v.Value -eq 'Allow') {
-            Write-Info "ALLOW: $($_.PSChildName)"
-            $allowCount++
+        try {
+            $v = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop
+            if ($v.Value -eq 'Allow') {
+                Write-Info "ALLOW: $($_.PSChildName)"
+                $allowCount++
+            }
+        } catch {
+            continue
         }
     }
 }
