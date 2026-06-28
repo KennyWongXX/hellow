@@ -20,6 +20,15 @@ function Write-Ok   { param([string]$Msg) Write-Host "  [OK]   $Msg" -Foreground
 function Write-Warn { param([string]$Msg) Write-Host "  [!!]   $Msg" -ForegroundColor Red; $script:WarnCount++ }
 function Write-Info { param([string]$Msg) Write-Host "  [INFO] $Msg" -ForegroundColor Yellow }
 
+function Get-NormalizedInstallEntry {
+    param($Entry)
+    [PSCustomObject]@{
+        DisplayName = [string]$Entry.DisplayName
+        Publisher   = if ($null -ne $Entry.Publisher) { [string]$Entry.Publisher } else { '' }
+        InstallDate = if ($null -ne $Entry.InstallDate) { [string]$Entry.InstallDate } else { '' }
+    }
+}
+
 Start-Transcript -Path $ReportFile -Force | Out-Null
 
 Write-Host ""
@@ -57,15 +66,19 @@ $regPaths = @(
 )
 
 $apps = foreach ($path in $regPaths) {
-    Get-ItemProperty $path -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName }
+    Get-ItemProperty $path -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName } |
+        ForEach-Object { Get-NormalizedInstallEntry $_ }
 }
 
-$foundApps = @()
-foreach ($kw in $remoteKeywords) {
-    $foundApps += $apps | Where-Object { $_.DisplayName -match $kw }
-}
-
-$foundApps = $foundApps | Select-Object DisplayName, Publisher, InstallDate -Unique
+$foundApps = foreach ($app in $apps) {
+    foreach ($kw in $remoteKeywords) {
+        if ($app.DisplayName -match $kw) {
+            $app
+            break
+        }
+    }
+} | Sort-Object DisplayName -Unique
 
 if ($foundApps) {
     Write-Warn "Remote access software found:"
@@ -277,8 +290,9 @@ Write-Section "12. RECENTLY INSTALLED PROGRAMS - Last 30 days"
 
 $cutoff = (Get-Date).AddDays(-30)
 $recent = $apps | ForEach-Object {
-    if ($_.InstallDate -match '^(\d{4})(\d{2})(\d{2})') {
-        $d = Get-Date -Year $matches[1] -Month $matches[2] -Day $matches[3]
+    $dateText = [string]$_.InstallDate
+    if ($dateText -match '^(\d{4})(\d{2})(\d{2})') {
+        $d = Get-Date -Year ([int]$matches[1]) -Month ([int]$matches[2]) -Day ([int]$matches[3])
         if ($d -gt $cutoff) {
             [PSCustomObject]@{
                 Name      = $_.DisplayName
