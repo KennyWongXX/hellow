@@ -1,4 +1,4 @@
-# SCRIPT_VERSION=v6
+# SCRIPT_VERSION=v7
 param(
     [string]$ScriptDir = ''
 )
@@ -18,8 +18,60 @@ if (-not $ScriptDir) {
 }
 
 $ScriptFolder = $ScriptDir.TrimEnd('\')
-$ReportFile = Join-Path $ScriptFolder ("PC-Security-Check-report-{0:yyyyMMdd-HHmmss}.txt" -f (Get-Date))
+$WorkDir = Join-Path $env:TEMP 'PC-Security-Check'
+$ReportFile = Join-Path $WorkDir ("PC-Security-Check-report-{0:yyyyMMdd-HHmmss}.txt" -f (Get-Date))
 $AttentionItems = New-Object System.Collections.Generic.List[string]
+
+function Test-CanWriteFolder {
+    param([string]$Folder)
+    if (-not $Folder -or -not (Test-Path -LiteralPath $Folder)) { return $false }
+    try {
+        $testFile = Join-Path $Folder ('_pcsec_test_' + [guid]::NewGuid().ToString() + '.tmp')
+        [System.IO.File]::WriteAllText($testFile, 'ok')
+        Remove-Item -LiteralPath $testFile -Force
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Save-LinesToFile {
+    param(
+        [string]$Path,
+        [string[]]$Lines
+    )
+    try {
+        $parent = Split-Path $Path -Parent
+        if (-not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        [System.IO.File]::WriteAllLines($Path, $Lines, [System.Text.UTF8Encoding]::new($false))
+        return $true
+    } catch {
+        Write-Host "  [ERROR] Could not save: $Path" -ForegroundColor Red
+        Write-Host "          $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Copy-ReportFiles {
+    param([string]$TargetFolder)
+
+    if (-not (Test-Path -LiteralPath $WorkDir)) { return @() }
+
+    $copied = New-Object System.Collections.Generic.List[string]
+    Get-ChildItem -LiteralPath $WorkDir -Filter '*.txt' -ErrorAction SilentlyContinue | ForEach-Object {
+        $dest = Join-Path $TargetFolder $_.Name
+        try {
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            $copied.Add($dest) | Out-Null
+        } catch {
+            Write-Host "  [ERROR] Could not copy to: $dest" -ForegroundColor Red
+            Write-Host "          $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+    return ,$copied.ToArray()
+}
 
 function Write-Section {
     param([string]$Title)
@@ -153,15 +205,21 @@ function Get-InstalledAppsSafe {
     return ,$results.ToArray()
 }
 
-try { Start-Transcript -Path $ReportFile -Force | Out-Null } catch { }
+try {
+    New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
+    Start-Transcript -Path $ReportFile -Force | Out-Null
+} catch {
+    Write-Host "  [WARN] Could not start transcript: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
-Write-Host "   PC SECURITY CHECK  [v6]" -ForegroundColor Green
+Write-Host "   PC SECURITY CHECK  [v7]" -ForegroundColor Green
 Write-Host "   $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Green
 Write-Host "  ============================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Script folder : $ScriptFolder"
+Write-Host "  Bat folder    : $ScriptFolder"
+Write-Host "  Working folder: $WorkDir"
 Write-Host "  Report file   : $ReportFile"
 Write-Host ""
 
@@ -457,10 +515,12 @@ Show-AttentionSummary
 
 try { Stop-Transcript | Out-Null } catch { }
 
-$summaryFile = Join-Path $ScriptFolder "PC-Security-Check-SUMMARY.txt"
+$summaryFile = Join-Path $WorkDir 'PC-Security-Check-SUMMARY.txt'
 $summaryLines = New-Object System.Collections.Generic.List[string]
 $summaryLines.Add("PC Security Check Summary - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
-$summaryLines.Add("Report file: $ReportFile") | Out-Null
+$summaryLines.Add("Bat folder: $ScriptFolder") | Out-Null
+$summaryLines.Add("Working folder: $WorkDir") | Out-Null
+$summaryLines.Add("Full report: $ReportFile") | Out-Null
 $summaryLines.Add("") | Out-Null
 
 if ($AttentionItems.Count -eq 0) {
@@ -474,42 +534,79 @@ if ($AttentionItems.Count -eq 0) {
     }
 }
 
-try {
-    [System.IO.File]::WriteAllLines($summaryFile, $summaryLines.ToArray())
-} catch { }
+Save-LinesToFile -Path $summaryFile -Lines $summaryLines.ToArray() | Out-Null
 
-$pathInfoFile = Join-Path $ScriptFolder "PC-Security-Check-FILES-HERE.txt"
+$pathInfoFile = Join-Path $WorkDir 'PC-Security-Check-FILES-HERE.txt'
+$finalBatFolder = $ScriptFolder
+$copyResults = @()
+
+if (Test-CanWriteFolder $ScriptFolder) {
+    $copyResults = Copy-ReportFiles -TargetFolder $ScriptFolder
+    if ($copyResults.Count -gt 0) {
+        $finalBatFolder = $ScriptFolder
+    }
+} else {
+    Write-Host "  [WARN] Cannot write directly to bat folder (Windows may be blocking it)." -ForegroundColor Yellow
+    Write-Host "         Trying Desktop folder..." -ForegroundColor Yellow
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    if (Test-CanWriteFolder $desktop) {
+        $copyResults = Copy-ReportFiles -TargetFolder $desktop
+        if ($copyResults.Count -gt 0) {
+            $finalBatFolder = $desktop
+        }
+    }
+}
+
+if ($copyResults.Count -eq 0) {
+    $finalBatFolder = $WorkDir
+}
+
 $pathInfo = @(
     "PC Security Check - file locations"
     "Scan time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     ""
-    "Folder:"
+    "Bat folder (where you ran the script):"
     $ScriptFolder
     ""
+    "Files created in working folder:"
+    $WorkDir
+    ""
+    "Files copied to (open this folder):"
+    $finalBatFolder
+    ""
     "Full report:"
-    $ReportFile
+    (Join-Path $finalBatFolder (Split-Path $ReportFile -Leaf))
     ""
     "Summary list:"
-    $summaryFile
+    (Join-Path $finalBatFolder 'PC-Security-Check-SUMMARY.txt')
 )
-try {
-    [System.IO.File]::WriteAllLines($pathInfoFile, $pathInfo)
-} catch { }
+Save-LinesToFile -Path $pathInfoFile -Lines $pathInfo | Out-Null
+if ($finalBatFolder -ne $WorkDir) {
+    Save-LinesToFile -Path (Join-Path $finalBatFolder 'PC-Security-Check-FILES-HERE.txt') -Lines $pathInfo | Out-Null
+}
 
 Write-Host ""
 Write-Host "  ############################################################" -ForegroundColor Green
-Write-Host "   FILES SAVED HERE:" -ForegroundColor Green
+Write-Host "   FILES SAVED HERE - OPEN THIS FOLDER:" -ForegroundColor Green
 Write-Host "  ############################################################" -ForegroundColor Green
 Write-Host ""
-Write-Host "  $ScriptFolder" -ForegroundColor Yellow
+Write-Host "  $finalBatFolder" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  1) $ReportFile" -ForegroundColor Yellow
-Write-Host "  2) $summaryFile" -ForegroundColor Yellow
-Write-Host "  3) $pathInfoFile" -ForegroundColor Yellow
+Write-Host "  Files:" -ForegroundColor Green
+Write-Host "  - PC-Security-Check-report-*.txt" -ForegroundColor Yellow
+Write-Host "  - PC-Security-Check-SUMMARY.txt" -ForegroundColor Yellow
+Write-Host "  - PC-Security-Check-FILES-HERE.txt" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "  Opening this folder in File Explorer now..." -ForegroundColor Cyan
+if ($copyResults.Count -eq 0) {
+    Write-Host "  [WARN] Could not copy to Downloads. Files are in TEMP:" -ForegroundColor Red
+    Write-Host "  $WorkDir" -ForegroundColor Red
+}
+Write-Host ""
+Write-Host "  Opening folder in File Explorer now..." -ForegroundColor Cyan
 Write-Host "  ############################################################" -ForegroundColor Green
 
-try { Start-Process explorer.exe -ArgumentList $ScriptFolder } catch { }
+try { Start-Process explorer.exe -ArgumentList $finalBatFolder } catch { }
 
-Show-AttentionSummary
+# Tell bat where files ended up
+$manifestFile = Join-Path $WorkDir 'PC-Security-Check-MANIFEST.txt'
+Save-LinesToFile -Path $manifestFile -Lines @($finalBatFolder) | Out-Null
