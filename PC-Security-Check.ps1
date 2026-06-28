@@ -108,14 +108,17 @@ $regPaths = @(
 
 try {
     $apps = @(Get-InstalledAppsSafe)
-    $foundApps = foreach ($app in $apps) {
-        foreach ($kw in $remoteKeywords) {
-            if ($app.DisplayName -match $kw) {
-                $app
-                break
+    $foundApps = @(
+        foreach ($app in $apps) {
+            foreach ($kw in $remoteKeywords) {
+                if ($app.DisplayName -match $kw) {
+                    $app
+                    break
+                }
             }
         }
-    } | Sort-Object DisplayName -Unique
+    )
+    $foundApps = @($foundApps | Sort-Object DisplayName -Unique)
 
     if ($foundApps) {
         Write-Warn "Remote access software found:"
@@ -338,7 +341,7 @@ try {
 Write-Section "12. RECENTLY INSTALLED PROGRAMS - Last 30 days"
 
 $cutoff = (Get-Date).AddDays(-30)
-$recent = $apps | ForEach-Object {
+$recent = @($apps | ForEach-Object {
     $dateText = [string]$_.InstallDate
     if ($dateText -match '^(\d{4})(\d{2})(\d{2})') {
         $d = Get-Date -Year ([int]$matches[1]) -Month ([int]$matches[2]) -Day ([int]$matches[3])
@@ -350,7 +353,8 @@ $recent = $apps | ForEach-Object {
             }
         }
     }
-} | Sort-Object Installed -Descending
+})
+$recent = @($recent | Sort-Object Installed -Descending)
 
 if ($recent) {
     $recent | Select-Object -First 15 | Format-Table -AutoSize | Out-String | Write-Host
